@@ -274,7 +274,8 @@ class MainActivity : ComponentActivity() {
                 }
                 addView(iconBox, LinearLayout.LayoutParams(dp(46), dp(34)))
                 addView(text(title, 10, if (tab == id) Typeface.BOLD else Typeface.NORMAL, if (tab == id) INK else GRAY).apply { setPadding(0, dp(6), 0, 0) })
-                contentDescription = t(title); isSoundEffectsEnabled = prefs.getBoolean("interface_sound", true); setOnClickListener {
+                contentDescription = t(title); isSoundEffectsEnabled = false; setOnClickListener {
+                    Feedback.interfaceClick(this@MainActivity)
                     navigate(id)
                     if (id == "profile" && adminTap.tap(SystemClock.elapsedRealtime())) showAdminLogin()
                     else if (id != "profile") adminTap.reset()
@@ -319,8 +320,9 @@ class MainActivity : ComponentActivity() {
                     val face: View = if (key == "add" || key == "delete") LineIcon(this@MainActivity, key, INK) else text(key, 29)
                     addView(face, FrameLayout.LayoutParams(if (face is LineIcon) dp(23) else -2, if (face is LineIcon) dp(23) else -2, Gravity.CENTER))
                     contentDescription = t(when (key) { "add" -> "Добавить участника"; "delete" -> "Удалить цифру"; else -> key })
-                    isSoundEffectsEnabled = prefs.getBoolean("interface_sound", true)
+                    isSoundEffectsEnabled = false
                     setOnClickListener {
+                        Feedback.interfaceClick(this@MainActivity)
                         input.setText(when (key) { "delete" -> dial.dropLast(1); "add" -> (dial.trimEnd(',') + ",").take(70); else -> (dial + key).take(70) })
                         input.setSelection(input.text.length)
                     }
@@ -377,8 +379,8 @@ class MainActivity : ComponentActivity() {
         listOf("Набор", "Недавние").forEachIndexed { index, label ->
             addView(text(label, 14, Typeface.BOLD, if ((index == 1) == recent) WHITE else GRAY).apply {
                 gravity = Gravity.CENTER; background = ripple(if ((index == 1) == recent) INK else WHITE, 18)
-                contentDescription = t(label); isSoundEffectsEnabled = prefs.getBoolean("interface_sound", true)
-                setOnClickListener { rebuild(if (index == 1) "recent" else "calls", true) }
+                contentDescription = t(label); isSoundEffectsEnabled = false
+                setOnClickListener { Feedback.interfaceClick(this@MainActivity); rebuild(if (index == 1) "recent" else "calls", true) }
             }, LinearLayout.LayoutParams(0, dp(42), 1f).apply { if (index == 0) marginEnd = dp(8) })
         }
     }
@@ -863,8 +865,8 @@ class MainActivity : ComponentActivity() {
             val item = getItem(position)
             holder.avatar.removeAllViews(); holder.avatar.addView(avatar(item.peer), FrameLayout.LayoutParams(-1, -1))
             holder.title.text = contactName(item.peer); holder.preview.text = (if (item.outgoing) t("Вы: ") else "") + item.text
-            holder.time.text = time.format(Date(item.createdAt)); holder.itemView.setOnClickListener { openConversation(item.peer) }
-            holder.itemView.contentDescription = Localized.format(this@MainActivity, "Диалог %1\$s", contactName(item.peer)); holder.itemView.isSoundEffectsEnabled = prefs.getBoolean("interface_sound", true); Motion.press(holder.itemView)
+            holder.time.text = time.format(Date(item.createdAt)); holder.itemView.setOnClickListener { Feedback.interfaceClick(this@MainActivity); openConversation(item.peer) }
+            holder.itemView.contentDescription = Localized.format(this@MainActivity, "Диалог %1\$s", contactName(item.peer)); holder.itemView.isSoundEffectsEnabled = false; Motion.press(holder.itemView)
         }
     }
     private class InboxHolder(view: View, val avatar: FrameLayout, val title: TextView, val preview: TextView, val time: TextView) : RecyclerView.ViewHolder(view)
@@ -885,8 +887,8 @@ class MainActivity : ComponentActivity() {
             val item = getItem(position)
             holder.title.text = contactName(item.peer); holder.preview.text = item.text
             holder.time.text = android.text.format.DateFormat.getMediumDateFormat(this@MainActivity).format(Date(item.createdAt))
-            holder.itemView.isSoundEffectsEnabled = prefs.getBoolean("interface_sound", true)
-            holder.itemView.setOnClickListener { hideKeyboard(); openConversation(item.peer) }
+            holder.itemView.isSoundEffectsEnabled = false
+            holder.itemView.setOnClickListener { Feedback.interfaceClick(this@MainActivity); hideKeyboard(); openConversation(item.peer) }
         }
     }
     private class SearchHolder(view: View, val title: TextView, val preview: TextView, val time: TextView) : RecyclerView.ViewHolder(view)
@@ -915,8 +917,8 @@ class MainActivity : ComponentActivity() {
                 t(if (item.incoming) "Входящий" else "Исходящий") + " · " + t(outcome) +
                     if (item.durationSeconds > 0) " · %02d:%02d".format(item.durationSeconds / 60, item.durationSeconds % 60) else ""
             holder.stamp.text = SimpleDateFormat("d MMM · HH:mm", resources.configuration.locales[0]).format(Date(item.timestamp))
-            holder.itemView.isSoundEffectsEnabled = prefs.getBoolean("interface_sound", true)
-            holder.itemView.setOnClickListener { openConversation(item.peer) }
+            holder.itemView.isSoundEffectsEnabled = false
+            holder.itemView.setOnClickListener { Feedback.interfaceClick(this@MainActivity); openConversation(item.peer) }
         }
     }
     private class EventHolder(view: View, val icon: FrameLayout, val title: TextView, val detail: TextView, val stamp: TextView) : RecyclerView.ViewHolder(view)
@@ -979,7 +981,7 @@ class MainActivity : ComponentActivity() {
         addView(LineIcon(this@MainActivity, icon, INK), size(21).apply { marginEnd = dp(14) })
         addView(text(title, 14, Typeface.BOLD), LinearLayout.LayoutParams(0, -2, 1f))
         addView(text(detail, 11, color = GRAY)); addView(LineIcon(this@MainActivity, "chevron", GRAY), size(14).apply { marginStart = dp(8) })
-        setOnClickListener { action() }; contentDescription = t(title); isSoundEffectsEnabled = prefs.getBoolean("interface_sound", true); Motion.press(this)
+        setOnClickListener { Feedback.interfaceClick(this@MainActivity); action() }; contentDescription = t(title); isSoundEffectsEnabled = false; Motion.press(this)
     }
     private fun avatar(peer: String, own: Boolean = false) = FrameLayout(this).apply {
         background = shape(if (own) INK else WHITE, if (own) 28 else 20)
@@ -997,9 +999,9 @@ class MainActivity : ComponentActivity() {
         importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
     }
     private fun iconButton(icon: String, label: String, backgroundColor: Int = BACKGROUND, tint: Int = INK, action: () -> Unit) = FrameLayout(this).apply {
-        background = ripple(backgroundColor, 24); contentDescription = t(label); isSoundEffectsEnabled = prefs.getBoolean("interface_sound", true)
+        background = ripple(backgroundColor, 24); contentDescription = t(label); isSoundEffectsEnabled = false
         addView(LineIcon(this@MainActivity, icon, tint), FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER))
-        setOnClickListener { action() }; Motion.press(this)
+        setOnClickListener { Feedback.interfaceClick(this@MainActivity); action() }; Motion.press(this)
     }
     private fun text(value: String, size: Int, weight: Int = Typeface.NORMAL, color: Int = INK) = TextView(this).apply {
         text = t(value); textSize = size.toFloat(); setTextColor(color); typeface = Typeface.create("sans-serif", weight); includeFontPadding = false
