@@ -996,8 +996,9 @@ class MainActivity : ComponentActivity() {
     private fun settingsRow(title: String, detail: String, icon: String, action: () -> Unit) = row().apply {
         minimumHeight = dp(72); background = ripple(WHITE, 12)
         addView(LineIcon(this@MainActivity, icon, INK), size(21).apply { marginEnd = dp(14) })
-        addView(text(title, 14, Typeface.BOLD), LinearLayout.LayoutParams(0, -2, 1f))
-        addView(text(detail, 11, color = GRAY)); addView(LineIcon(this@MainActivity, "chevron", GRAY), size(14).apply { marginStart = dp(8) })
+        addView(text(title, 14, Typeface.BOLD).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END }, LinearLayout.LayoutParams(0, -2, 1f))
+        addView(text(detail, 11, color = GRAY).apply { maxWidth = dp(110); maxLines = 1; ellipsize = TextUtils.TruncateAt.END })
+        addView(LineIcon(this@MainActivity, "chevron", GRAY), size(14).apply { marginStart = dp(8) })
         setOnClickListener { Feedback.interfaceClick(this@MainActivity); action() }; contentDescription = t(title); isSoundEffectsEnabled = false; Motion.press(this)
     }
     private fun avatar(peer: String, own: Boolean = false) = FrameLayout(this).apply {
