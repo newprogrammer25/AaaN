@@ -104,7 +104,7 @@ class UiFeaturesTest {
             assertTrue(device.findObject(UiSelector().text("Звуки интерфейса")).exists())
             toggleAndRestore(activity, "Звук сообщений")
             toggleAndRestore(activity, "Звуки интерфейса")
-            device.findObject(UiSelector().text("Готово")).click()
+            device.findObject(UiSelector().resourceId("android:id/button2")).click()
         } finally {
             finish(activity)
             SecureStore(context).use { it.clearConversation(peer) }
@@ -279,7 +279,7 @@ class UiFeaturesTest {
     private fun screenshot(name: String) {
         instrumentation.waitForIdleSync()
         val bitmap = instrumentation.uiAutomation.takeScreenshot() ?: error("Screenshot unavailable")
-        File(context.getExternalFilesDir(null), "$name.png").outputStream().use {
+        File(context.filesDir, "$name.png").outputStream().use {
             bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)
         }
         bitmap.recycle()

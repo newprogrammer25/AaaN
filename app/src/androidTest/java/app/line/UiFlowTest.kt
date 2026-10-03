@@ -67,7 +67,7 @@ class UiFlowTest {
             assertTrue(device.findObject(UiSelector().text("Новый диалог")).waitForExists(5000))
             val dialogRoot = instrumentation.uiAutomation.rootInActiveWindow ?: error("New conversation dialog did not open")
             assertTrue(accessibilityNodes(dialogRoot).any { it.hintText?.toString() == "Имя (необязательно)" })
-            device.findObject(UiSelector().text("Отмена")).click()
+            device.findObject(UiSelector().resourceId("android:id/button2")).click()
             instrumentation.runOnMainSync {
                 val root = activity.window.decorView
                 find(root, "Профиль").performClick()
@@ -165,7 +165,7 @@ class UiFlowTest {
         instrumentation.waitForIdleSync()
         Thread.sleep(250)
         val bitmap = instrumentation.uiAutomation.takeScreenshot() ?: error("Screenshot unavailable")
-        File(context.getExternalFilesDir(null), "$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        File(context.filesDir, "$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
         bitmap.recycle()
     }
     private fun descendants(view: View): List<View> = listOf(view) + if (view is ViewGroup) (0 until view.childCount).flatMap { descendants(view.getChildAt(it)) } else emptyList()

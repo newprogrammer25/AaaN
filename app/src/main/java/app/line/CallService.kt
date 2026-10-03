@@ -772,7 +772,10 @@ class CallService : Service() {
         engine = null
         AppNotifications.cancelIncomingCall(this)
         scope.launch {
-            try { oldEngine?.disconnect(); if (secure.isCompleted && !secure.isCancelled) withContext(Dispatchers.IO) { secure.await().close() } }
+            try {
+                oldEngine?.disconnect()
+                withContext(Dispatchers.IO) { runCatching { secure.await().close() } }
+            }
             finally { scope.cancel() }
         }
         http?.dispatcher?.executorService?.shutdown(); http?.connectionPool?.evictAll()

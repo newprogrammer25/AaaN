@@ -38,7 +38,7 @@ class NotificationTest {
         val device = UiDevice.getInstance(instrumentation)
         device.openNotification(); instrumentation.waitForIdleSync()
         val bitmap = instrumentation.uiAutomation.takeScreenshot() ?: error("Screenshot unavailable")
-        File(context.getExternalFilesDir(null), "ui-system-notification.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        File(context.filesDir, "ui-system-notification.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
         bitmap.recycle(); device.pressBack()
         val monitor = instrumentation.addMonitor(MainActivity::class.java.name, null, false)
         try {
