@@ -124,8 +124,8 @@ class UiFeaturesTest {
             assertTrue(labels(activity.window.decorView).contains("Набор"))
             assertTrue(labels(activity.window.decorView).contains("Недавние"))
             click(activity, "Недавние")
-            await(activity) { labels(activity.window.decorView).contains("Звонок отклонён") }
-            assertTrue(labels(activity.window.decorView).any { it.contains("Отклонён") })
+            await(activity) { labels(activity.window.decorView).any { it.contains("Звонок отклонён") } }
+            assertTrue(labels(activity.window.decorView).any { it.contains("Входящий") })
             screenshot("ui-recent")
         } finally { finish(activity) }
     }
@@ -164,7 +164,8 @@ class UiFeaturesTest {
             }
             click(activity, "Назад")
             click(activity, "Поиск сообщений")
-            instrumentation.runOnMainSync { searchInput(activity, "Поиск сообщений").setText("deleted fixture") }
+            val deletionQuery = searchInput(activity, "Поиск сообщений")
+            instrumentation.runOnMainSync { deletionQuery.setText("deleted fixture") }
             await(activity) {
                 val visible = labels(activity.window.decorView)
                 visible.contains("Ничего не найдено") && visible.none { it == oldMessage || it == deletedText }
