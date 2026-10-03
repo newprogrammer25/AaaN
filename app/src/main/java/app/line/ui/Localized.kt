@@ -306,6 +306,8 @@ class LocalizedDialog(private val context: Context) {
 
     fun setTitle(source: String) = apply { builder.setTitle(Localized.text(context, source)) }
 
+    fun setRawTitle(value: String) = apply { builder.setTitle(value) }
+
     fun setMessage(source: String) = apply { builder.setMessage(Localized.text(context, source)) }
 
     fun setView(view: View) = apply { builder.setView(view) }

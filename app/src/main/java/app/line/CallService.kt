@@ -23,6 +23,15 @@ import java.security.SecureRandom
 import java.util.UUID
 
 class CallService : Service() {
+    private data class CallAttempt(
+        val id: String,
+        val peer: String,
+        val incoming: Boolean,
+        val startedAt: Long,
+        val connectedAt: Long = 0,
+        val eventRecorded: Boolean = false,
+    )
+
     inner class LocalBinder : Binder() { val service get() = this@CallService }
     private val binder = LocalBinder()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -44,6 +53,7 @@ class CallService : Service() {
     private var callId = ""
     private var callRoom = ""
     private var owner = ""
+    private var callAttempt: CallAttempt? = null
     private var roomKey: ByteArray? = null
     private val pendingKeys = mutableMapOf<String, JSONObject>()
     internal var mediaEngineFactory: (Context, CoroutineScope, (MediaEvent) -> Unit) -> CallMediaEngine =
@@ -62,7 +72,7 @@ class CallService : Service() {
                 delay(500)
                 val active = network.activeNetwork
                 if (active == null || network.getNetworkCapabilities(active)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) != true) {
-                    if (state.phase != Phase.IDLE) finish("Интернет отключён. Звонок завершён")
+                    if (state.phase != Phase.IDLE) finish("Интернет отключён. Звонок завершён", outcome = "failed")
                 }
             }
         }
@@ -73,8 +83,7 @@ class CallService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        getSystemService(NotificationManager::class.java).createNotificationChannel(
-            NotificationChannel("calls", "Активный звонок", NotificationManager.IMPORTANCE_LOW))
+        AppNotifications.createChannels(this)
         state = state.copy(number = prefs.getString("number", "") ?: "", configReady = config() != null,
             highQuality = prefs.getBoolean("high_quality", true))
         network.registerDefaultNetworkCallback(networkCallback)
@@ -101,13 +110,15 @@ class CallService : Service() {
     private fun update(value: CallState) {
         state = value
         listeners.toList().forEach { it(value) }
-        if (foreground) getSystemService(NotificationManager::class.java).notify(1, notification())
+        if (foreground) getSystemService(NotificationManager::class.java)
+            .notify(AppNotifications.ACTIVE_CALL_ID, notification())
     }
 
     private fun work(block: suspend () -> Unit): Job = scope.launch {
         try { block() } catch (cancelled: CancellationException) { throw cancelled }
         catch (_: Exception) {
-            if (state.phase != Phase.IDLE || foreground) finish("Ошибка защищённого соединения. Проверьте SAS участников")
+            if (callAttempt != null) finish("Ошибка защищённого соединения. Проверьте SAS участников", outcome = "failed")
+            else if (state.phase != Phase.IDLE || foreground) finish("Ошибка защищённого соединения. Проверьте SAS участников")
             else update(state.copy(message = "Операция не выполнена: проверьте сеть, ключи и SAS"))
         }
     }
@@ -305,7 +316,7 @@ class CallService : Service() {
         registrationTimeout?.cancel()
         socket?.cancel(); socket = null
         cancelLookups("Offline")
-        if (state.phase != Phase.IDLE) finish("Соединение потеряно. Звонок завершён", notifyServer = false)
+        if (state.phase != Phase.IDLE) finish("Соединение потеряно. Звонок завершён", notifyServer = false, outcome = "failed")
         update(state.copy(online = false, mediaReady = false, message = "Не удалось подключиться. Проверьте настройки сервиса"))
         retryJob?.cancel()
         retryJob = scope.launch { delay(5_000); connect() }
@@ -333,9 +344,32 @@ class CallService : Service() {
     suspend fun verified(number: String): Boolean = db { it.isVerified(number) }
     suspend fun verifyPeer(number: String) = db { it.verifyPeer(number) }
     suspend fun messages(number: String, before: Long? = null): List<ChatMessage> = db { it.messages(number, before, 40) }
+    suspend fun searchMessages(query: String, peer: String? = null, before: Long? = null): List<ChatMessage> =
+        db { it.searchMessages(query, peer, before, 40) }
     suspend fun conversations(before: Long? = null): List<ChatMessage> = db { it.conversations(before, 40) }
-    suspend fun deleteMessage(id: String) { db { it.deleteMessage(id) }; chatEnvelopeIds.remove(id); update(state.copy(chatVersion = state.chatVersion + 1)) }
-    suspend fun clearConversation(peer: String) { db { it.clearConversation(peer) }; update(state.copy(chatVersion = state.chatVersion + 1)) }
+    suspend fun activityEvents(callsOnly: Boolean = false, before: Long? = null): List<ActivityEvent> =
+        db { it.activityEvents(callsOnly, before, 40) }
+
+    suspend fun clearMessageNotifications(peer: String) {
+        var cursor: Long? = null
+        do {
+            val page = db { it.activityEvents(before = cursor, limit = 100) }
+            page.filter { it.kind == ActivityEvent.MESSAGE && it.peer == peer && it.incoming }
+                .forEach { AppNotifications.cancelMessage(this, it.id) }
+            cursor = page.lastOrNull()?.timestamp
+        } while (page.size == 100)
+    }
+    suspend fun deleteMessage(id: String) {
+        db { it.deleteMessage(id) }
+        chatEnvelopeIds.remove(id)
+        AppNotifications.cancelMessage(this, id)
+        update(state.copy(chatVersion = state.chatVersion + 1, eventVersion = state.eventVersion + 1))
+    }
+    suspend fun clearConversation(peer: String) {
+        val removedEvents = db { it.clearConversation(peer) }
+        removedEvents.forEach { AppNotifications.cancelMessage(this, it) }
+        update(state.copy(chatVersion = state.chatVersion + 1, eventVersion = state.eventVersion + 1))
+    }
 
     private suspend fun preparePeer(number: String) {
         val exists = db { it.hasSession(number) }
@@ -356,6 +390,7 @@ class CallService : Service() {
         val envelope = db { it.encryptAndQueue(number, id, payload, text) }
         chatEnvelopeIds.add(id)
         check(send("envelope", JSONObject().put("to", number).put("id", id).put("cipherType", envelope.cipherType).put("body", envelope.body)))
+        Feedback.messageSent(this)
         update(state.copy(chatVersion = state.chatVersion + 1))
     }
 
@@ -377,7 +412,7 @@ class CallService : Service() {
             "capabilities" -> {
                 update(state.copy(callsEnabled = message.optBoolean("callsEnabled", true), chatEnabled = message.optBoolean("chatEnabled", true),
                     mediaReady = message.optBoolean("mediaReady"), maxParticipants = message.optInt("maxParticipants", 8).coerceIn(2, 8)))
-                if (!state.callsEnabled && state.phase != Phase.IDLE) finish("Администратор отключил звонки", false)
+                if (!state.callsEnabled && state.phase != Phase.IDLE) finish("Администратор отключил звонки", false, "failed")
             }
             "bundle" -> lookups.remove(message.getString("requestId"))?.complete(message.getJSONObject("bundle"))
             "envelope" -> {
@@ -392,7 +427,9 @@ class CallService : Service() {
                         require(payload.getString("id") == id)
                         val text = payload.getString("text")
                         require(text.toByteArray().size <= 4_096)
-                        update(state.copy(chatVersion = state.chatVersion + 1, message = "Новое зашифрованное сообщение от $from"))
+                        update(state.copy(chatVersion = state.chatVersion + 1, eventVersion = state.eventVersion + 1,
+                            message = "Новое зашифрованное сообщение от $from"))
+                        AppNotifications.showIncomingMessage(this, from, id)
                     }
                     "call-key" -> {
                         require(payload.getString("owner") == from)
@@ -411,8 +448,12 @@ class CallService : Service() {
             "sent" -> {
                 val id = message.getString("id")
                 if (!chatEnvelopeIds.remove(id)) return
-                db { it.acknowledgeSent(id) }
-                update(state.copy(chatVersion = state.chatVersion + 1))
+                val evicted = db {
+                    it.acknowledgeSent(id)
+                    it.recordMessageActivity(id, outgoing = true, outcome = "sent")
+                }
+                evicted.forEach { AppNotifications.cancelMessage(this, it) }
+                update(state.copy(chatVersion = state.chatVersion + 1, eventVersion = state.eventVersion + 1))
             }
             "call_created" -> {
                 if (state.phase != Phase.OUTGOING) return
@@ -444,9 +485,11 @@ class CallService : Service() {
             }
             "incoming" -> {
                 if (state.phase != Phase.IDLE) return
-                setupCall(message)
+                setupCall(message, incoming = true)
                 update(state.copy(phase = Phase.INCOMING, peer = owner, message = "Входящий групповой звонок"))
                 adoptKey()
+                if (consumePendingCallDismissal(callId)) finish("Звонок отклонён", outcome = "declined")
+                else AppNotifications.showIncomingCall(this, callId)
             }
             "room_grant" -> {
                 require(message.getString("callId") == callId && message.getString("room") == callRoom)
@@ -476,12 +519,17 @@ class CallService : Service() {
                 lookups.remove(request)?.completeExceptionally(IllegalStateException(message.optString("code")))
                 val id = message.optString("id")
                 if (id in chatEnvelopeIds) {
-                    db { it.updateMessageStatus(id, "failed") }
-                    update(state.copy(chatVersion = state.chatVersion + 1, message = "Сообщение не отправлено: адресат недоступен"))
+                    val evicted = db {
+                        it.updateMessageStatus(id, "failed")
+                        it.recordMessageActivity(id, outgoing = true, outcome = "failed")
+                    }
+                    evicted.forEach { AppNotifications.cancelMessage(this, it) }
+                    update(state.copy(chatVersion = state.chatVersion + 1, eventVersion = state.eventVersion + 1,
+                        message = "Сообщение не отправлено: адресат недоступен"))
                 }
                 if (message.optString("code") == "replaced") {
                     generation++; socket?.cancel(); socket = null
-                    finish("Учётная запись открыта на другом устройстве", false)
+                    finish("Учётная запись открыта на другом устройстве", false, "failed")
                     update(state.copy(online = false))
                 } else if (request.isEmpty() && id.isEmpty() && state.phase != Phase.IDLE) finish("Звонок невозможен: участник недоступен или LiveKit не настроен")
             }
@@ -490,12 +538,15 @@ class CallService : Service() {
 
     private fun strings(array: JSONArray): List<String> = (0 until array.length()).map { array.getString(it) }
 
-    private fun setupCall(message: JSONObject) {
+    private fun setupCall(message: JSONObject, incoming: Boolean = false) {
         callId = message.getString("callId")
         callRoom = message.getString("room")
         owner = message.getString("owner")
         val members = strings(message.getJSONArray("members"))
         require(members.size in 2..8 && members.distinct().size == members.size && state.number in members && owner in members)
+        val peers = members.filter { it != state.number }.joinToString(",")
+        if (incoming || callAttempt == null) beginCallAttempt(peers, incoming)
+        else callAttempt = callAttempt?.copy(peer = peers)
         update(state.copy(members = members))
         callTimeout?.cancel()
         callTimeout = scope.launch { delay(45_000); if (state.phase != Phase.CONNECTED) finish("Нет ответа или соединения. Звонок завершён") }
@@ -513,30 +564,50 @@ class CallService : Service() {
         when (event) {
             is MediaEvent.Connected -> {
                 callTimeout?.cancel()
+                callAttempt = callAttempt?.copy(connectedAt = SystemClock.elapsedRealtime())
                 update(state.copy(phase = Phase.CONNECTED, connectedAt = SystemClock.elapsedRealtime(), message = "Голос E2EE · ${if (state.highQuality) "Opus HQ" else "Opus речь"}"))
             }
             is MediaEvent.Participants -> {
                 require(event.numbers.all { it in state.members }) { "Unexpected room participant" }
                 update(state.copy(participants = event.numbers))
             }
-            is MediaEvent.Disconnected -> if (state.phase != Phase.IDLE) finish("Медиасоединение потеряно. Звонок завершён")
-            is MediaEvent.Failed -> finish("Ошибка E2EE или медиасервера. Звонок завершён")
+            is MediaEvent.Disconnected -> if (state.phase != Phase.IDLE) finish("Медиасоединение потеряно. Звонок завершён", outcome = "failed")
+            is MediaEvent.Failed -> finish("Ошибка E2EE или медиасервера. Звонок завершён", outcome = "failed")
         }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
+            AppNotifications.ACTION_DISMISS_INCOMING -> {
+                val dismissed = intent.getStringExtra(AppNotifications.EXTRA_CALL_ID).orEmpty()
+                if (state.phase == Phase.INCOMING && dismissed == callId) {
+                    work { finish("Звонок отклонён", outcome = "declined") }
+                } else if (dismissed.isNotEmpty()) {
+                    prefs.edit().putString("pending_call_dismissal", dismissed)
+                        .putLong("pending_call_dismissal_at", System.currentTimeMillis()).apply()
+                }
+            }
             "dial", "accept" -> {
-                if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) { stopSelf(); return START_NOT_STICKY }
+                if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                    if (intent.action == "dial") {
+                        val peers = intent.getStringArrayListExtra("members")?.distinct().orEmpty()
+                        if (peers.isNotEmpty()) beginCallAttempt(peers.joinToString(","), incoming = false)
+                    }
+                    scope.launch { finish("Нужен доступ к микрофону", outcome = if (intent.action == "accept") "missed" else "failed") }
+                    return START_NOT_STICKY
+                }
+                if (intent.action == "accept") AppNotifications.cancelIncomingCall(this)
                 if (!foreground) {
-                    if (Build.VERSION.SDK_INT >= 30) startForeground(1, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
-                    else startForeground(1, notification())
+                    if (Build.VERSION.SDK_INT >= 30) startForeground(AppNotifications.ACTIVE_CALL_ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+                    else startForeground(AppNotifications.ACTIVE_CALL_ID, notification())
                     foreground = true
                 }
                 work {
                     if (intent.action == "dial" && state.phase == Phase.IDLE) {
                         val members = intent.getStringArrayListExtra("members")?.distinct() ?: emptyList()
-                        require(members.size in 1 until state.maxParticipants && state.number !in members && state.online && state.mediaReady && state.callsEnabled)
+                        require(members.size in 1 until state.maxParticipants && state.number !in members)
+                        beginCallAttempt(members.joinToString(","), incoming = false)
+                        require(state.online && state.mediaReady && state.callsEnabled)
                         update(state.copy(phase = Phase.OUTGOING, peer = members.joinToString(", "), members = listOf(state.number) + members, message = "Создаём группу…"))
                         launchCallOperation(Phase.OUTGOING, "") { epoch, call ->
                             withTimeout(20_000) {
@@ -610,41 +681,78 @@ class CallService : Service() {
 
     fun hangup() { work {
         val pending = state.phase == Phase.OUTGOING && callId.isEmpty()
-        finish("Звонок завершён")
+        val outcome = when {
+            state.phase == Phase.CONNECTED -> "completed"
+            state.phase == Phase.INCOMING -> "declined"
+            state.phase == Phase.OUTGOING || state.phase == Phase.CONNECTING -> "cancelled"
+            else -> "failed"
+        }
+        finish("Звонок завершён", outcome = outcome)
         if (pending) connect()
     } }
 
-    private suspend fun finish(message: String, notifyServer: Boolean = true) {
+    private fun beginCallAttempt(peer: String, incoming: Boolean) {
+        callAttempt = CallAttempt(UUID.randomUUID().toString(), peer, incoming, System.currentTimeMillis())
+    }
+
+    private fun consumePendingCallDismissal(serverCallId: String): Boolean {
+        val id = prefs.getString("pending_call_dismissal", "") ?: ""
+        val savedAt = prefs.getLong("pending_call_dismissal_at", 0)
+        if (id.isEmpty()) return false
+        prefs.edit().remove("pending_call_dismissal").remove("pending_call_dismissal_at").apply()
+        return id == serverCallId && System.currentTimeMillis() - savedAt <= 60_000
+    }
+
+    private suspend fun finish(message: String, notifyServer: Boolean = true, outcome: String? = null) {
         callTimeout?.cancel(); callTimeout = null
         val operation = callOperation
         callOperation = null
         callOperationEpoch++
         if (operation != currentCoroutineContext()[Job]) operation?.cancel()
+        val attempt = callAttempt
+        var saved = false
+        var result: String? = null
+        if (attempt != null && !attempt.eventRecorded) {
+            callAttempt = attempt.copy(eventRecorded = true)
+            val callOutcome = outcome ?: when {
+                attempt.incoming && state.phase == Phase.INCOMING -> "missed"
+                attempt.connectedAt > 0 -> "completed"
+                else -> "failed"
+            }
+            result = callOutcome
+            val duration = if (attempt.connectedAt > 0)
+                (SystemClock.elapsedRealtime() - attempt.connectedAt).coerceAtLeast(0) / 1_000 else 0
+            try {
+                val evicted = db { it.recordActivityEvent(ActivityEvent(
+                    attempt.id, ActivityEvent.CALL, attempt.peer, attempt.incoming, callOutcome,
+                    attempt.startedAt.coerceAtLeast(1), duration,
+                )) }
+                evicted.forEach { AppNotifications.cancelMessage(this, it) }
+                saved = true
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+            }
+        }
         if (notifyServer && callId.isNotEmpty()) send(if (state.phase == Phase.INCOMING) "decline_call" else "leave_call", JSONObject().put("callId", callId))
         callId = ""; callRoom = ""; owner = ""
         roomKey?.fill(0); roomKey = null; pendingKeys.clear()
         val oldEngine = engine; engine = null
         update(state.copy(phase = Phase.IDLE, peer = "", members = emptyList(), participants = emptyList(),
-            muted = false, speaker = false, connectedAt = 0, safetyCode = "", message = message))
+            muted = false, speaker = false, connectedAt = 0, safetyCode = "", message = message,
+            eventVersion = state.eventVersion + if (saved) 1 else 0))
         oldEngine?.disconnect()
         if (wakeLock?.isHeld == true) wakeLock?.release()
         wakeLock = null
         foreground = false
         stopForeground(STOP_FOREGROUND_REMOVE)
+        AppNotifications.cancelIncomingCall(this)
+        if (saved && result == "missed" && attempt?.incoming == true) AppNotifications.showMissedCall(this)
+        callAttempt = null
         stopSelf()
     }
 
-    private fun notification(): Notification {
-        fun action(name: String, code: Int) = PendingIntent.getService(this, code,
-            Intent(this, CallService::class.java).setAction(name), PendingIntent.FLAG_IMMUTABLE)
-        return Notification.Builder(this, "calls").setSmallIcon(R.drawable.ic_line)
-            .setContentTitle("Line · групповой звонок")
-            .setContentText(if (state.muted) "Микрофон выключен" else if (state.phase == Phase.CONNECTED) "В звонке" else "Соединяем…")
-            .setContentIntent(PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE))
-            .setOngoing(true).setCategory(Notification.CATEGORY_CALL).setVisibility(Notification.VISIBILITY_PRIVATE)
-            .addAction(Notification.Action.Builder(null, "Микрофон", action("mute", 1)).build())
-            .addAction(Notification.Action.Builder(null, "Завершить", action("hangup", 2)).build()).build()
-    }
+    private fun notification(): Notification = AppNotifications.ongoingCall(this, state.muted, state.phase == Phase.CONNECTED)
 
     override fun onDestroy() {
         lockAdmin()
@@ -661,6 +769,7 @@ class CallService : Service() {
         roomKey?.fill(0); roomKey = null
         val oldEngine = engine
         engine = null
+        AppNotifications.cancelIncomingCall(this)
         scope.launch {
             try { oldEngine?.disconnect(); if (secure.isCompleted && !secure.isCancelled) withContext(Dispatchers.IO) { secure.await().close() } }
             finally { scope.cancel() }

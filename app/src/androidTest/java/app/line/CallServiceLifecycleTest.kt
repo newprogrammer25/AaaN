@@ -41,6 +41,7 @@ import org.signal.libsignal.protocol.kem.KEMKeyPair
 import org.signal.libsignal.protocol.kem.KEMKeyType
 import org.signal.libsignal.protocol.util.KeyHelper
 import java.security.MessageDigest
+import java.security.KeyStore
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
@@ -207,6 +208,8 @@ class CallServiceLifecycleTest {
     private fun resetDevice() {
         context.stopService(Intent(context, CallService::class.java))
         context.deleteDatabase("line-secure-store.db")
+        KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+            .deleteEntry("${context.packageName}.line.secure-store.v1")
         context.getSharedPreferences("line", Context.MODE_PRIVATE).edit().clear()
             .putString("number", LOCAL_NUMBER).commit()
     }

@@ -37,6 +37,7 @@ class UiFlowTest {
 
     @Test fun firstLaunchExplainsNumberAndNavigationWorksWithoutSlogans() {
         setRussian()
+        context.getSharedPreferences("line", 0).edit().clear().commit()
         clearFlowFixtures()
         val activity = start()
         try {

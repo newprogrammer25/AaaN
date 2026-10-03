@@ -14,6 +14,7 @@ data class CallState(
     val members: List<String> = emptyList(),
     val participants: List<String> = emptyList(),
     val chatVersion: Long = 0,
+    val eventVersion: Long = 0,
     val configReady: Boolean = false,
     val mediaReady: Boolean = false,
     val callsEnabled: Boolean = true,

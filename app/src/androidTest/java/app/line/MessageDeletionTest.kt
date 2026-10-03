@@ -34,6 +34,8 @@ class MessageDeletionTest {
                     SELECT sequence,id,peer,text,outgoing,status,created_at FROM messages_v2_test WHERE deleted=0""")
                 database.execSQL("DROP TABLE messages_v2_test")
                 database.execSQL("CREATE INDEX messages_peer_sequence ON messages(peer, sequence DESC)")
+                database.execSQL("DROP TABLE activity_events")
+                database.execSQL("DROP TABLE activity_clock")
                 database.version = 1
                 database.setTransactionSuccessful()
             } finally { database.endTransaction() }

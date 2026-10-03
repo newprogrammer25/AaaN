@@ -52,6 +52,7 @@ class MainActivity : ComponentActivity() {
     private var peerVerified = false
     private var safetyCode = ""
     private var history = emptyList<ChatMessage>()
+    private var focusSequence: Long? = null
     private var inbox = emptyList<ChatMessage>()
     private var loadJob: Job? = null
     private var olderAvailable = true
@@ -200,6 +201,7 @@ class MainActivity : ComponentActivity() {
         connectionStatus?.text = t(if (value.online) "В сети" else "Не подключён")
         ownNumber?.text = if (value.number.isEmpty()) t("Номер не назначен") else formatNumber(value.number)
         ownAction?.text = t("Копировать")
+        if (value.online && !previous.online) requestNotificationPermission()
         if (target == "active") {
             if (previous.members != value.members || previous.participants != value.participants) renderParticipants()
             if (previous.muted != value.muted) renderControl(mute, if (value.muted) "muted" else "mic", value.muted)
@@ -368,7 +370,8 @@ class MainActivity : ComponentActivity() {
         frame.addView(inboxEmpty, FrameLayout.LayoutParams(-1, -1)); loadInbox()
     }
 
-    private fun openConversation(peer: String) {
+    private fun openConversation(peer: String, sequence: Long? = null) {
+        focusSequence = sequence
         selectedPeer = peer; safetyCode = ""; peerVerified = false; history = emptyList(); olderAvailable = true
         tab = "chat"; rebuild("conversation", true)
         action { val verified = service?.verified(peer) == true; if (peer == selectedPeer) { peerVerified = verified; refreshTrust() } }
@@ -426,7 +429,7 @@ class MainActivity : ComponentActivity() {
         loadJob = ui.launch {
             try {
                 if (!older) delay(250)
-                val page = s.searchMessages(query, peer, cursor).asReversed()
+                val page = s.searchMessages(query, peer, cursor)
                 if (screen != "search" || query != searchQuery.trim() || peer != searchPeer) return@launch
                 searchOlderAvailable = page.size == 40
                 searchResults = if (older) (searchResults + page).distinctBy { it.id }.takeLast(200) else page
@@ -486,6 +489,14 @@ class MainActivity : ComponentActivity() {
 
     private fun notificationsAllowed() = getSystemService(NotificationManager::class.java).areNotificationsEnabled()
 
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED &&
+            !prefs.getBoolean("notification_permission_asked", false)) {
+            prefs.edit().putBoolean("notification_permission_asked", true).apply()
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 2)
+        }
+    }
+
     private fun showNotificationSettings() {
         val box = column().apply { setPadding(dp(24), dp(8), dp(24), dp(8)) }
         fun toggle(label: String, key: String) {
@@ -499,8 +510,9 @@ class MainActivity : ComponentActivity() {
         box.addView(text("Звук входящих настраивается в Android.", 12, color = GRAY).apply { setPadding(0, dp(8), 0, dp(8)) })
         dialog().setTitle("Уведомления").setView(box).setNegativeButton("Готово", null)
             .setPositiveButton("Настройки Android") { _, _ ->
-                if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                    requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 2)
+                if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED &&
+                    !prefs.getBoolean("notification_permission_asked", false)) {
+                    requestNotificationPermission()
                 } else startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
             }.show()
     }
@@ -542,7 +554,7 @@ class MainActivity : ComponentActivity() {
             if (!peerVerified) { showSafety(); return@iconButton }
             input.isEnabled = false
             action {
-                try { service?.sendChat(selectedPeer, draft) ?: error("Нет подключения"); input.setText(""); loadHistory() }
+                try { service?.sendChat(selectedPeer, draft) ?: error("Нет подключения"); input.setText(""); focusSequence = null; loadHistory() }
                 finally { input.isEnabled = true }
             }
         }
@@ -559,7 +571,7 @@ class MainActivity : ComponentActivity() {
         val s = service ?: return
         if (screen != "conversation" || selectedPeer.isEmpty() || (older && (!olderAvailable || loadJob?.isActive == true))) return
         val peer = selectedPeer
-        val cursor = if (older) history.firstOrNull()?.sequence else null
+        val cursor = if (older) history.firstOrNull()?.sequence else focusSequence?.let { if (it < Long.MAX_VALUE) it + 1 else null }
         if (older && cursor == null) return
         val manager = chatList?.layoutManager as? LinearLayoutManager
         val anchor = manager?.findFirstVisibleItemPosition() ?: 0
@@ -571,6 +583,7 @@ class MainActivity : ComponentActivity() {
             try {
                 val page = s.messages(peer, cursor)
                 if (screen != "conversation" || peer != selectedPeer) return@launch
+                s.clearMessageNotifications(peer)
                 val oldSize = history.size
                 olderAvailable = page.size == 40
                 history = when {
@@ -626,7 +639,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun contactDetails() {
-        LocalizedDialog(this).setTitle(contactName(selectedPeer)).setItems(arrayOf("Проверить код безопасности", "Изменить имя", "Очистить переписку на этом устройстве")) { _, which ->
+        LocalizedDialog(this).setRawTitle(contactName(selectedPeer)).setItems(arrayOf("Проверить код безопасности", "Изменить имя", "Очистить переписку на этом устройстве")) { _, which ->
             if (which == 0) showSafety() else if (which == 2) {
                 val peer = selectedPeer
                 LocalizedDialog(this).setTitle("Удалить локальную историю?")
@@ -733,7 +746,8 @@ class MainActivity : ComponentActivity() {
 
     private fun callScreen() {
         val body = scrollBody().apply { gravity = Gravity.CENTER_HORIZONTAL }
-        body.addView(text(if (state.members.size > 2) "Групповой звонок" else state.members.firstOrNull { it != state.number }?.let(::contactName) ?: "Звонок", 25, Typeface.BOLD).apply {
+        body.addView(text("", 25, Typeface.BOLD).apply {
+            text = if (state.members.size > 2) t("Групповой звонок") else state.members.firstOrNull { it != state.number }?.let(::contactName) ?: t("Звонок")
             gravity = Gravity.CENTER; setPadding(0, dp(32), 0, dp(12))
         })
         timer = text(when (state.phase) { Phase.INCOMING -> "Входящий звонок"; Phase.OUTGOING -> "Вызов…"; else -> "Соединяем…" }, 13, color = GRAY).apply {
@@ -758,7 +772,7 @@ class MainActivity : ComponentActivity() {
         state.members.forEach { peer ->
             val item = row().apply { background = shape(WHITE, 20); setPadding(dp(16), dp(14), dp(16), dp(14)) }
             item.addView(avatar(peer), size(42).apply { marginEnd = dp(14) })
-            item.addView(text(if (peer == state.number) "Вы" else contactName(peer), 15, Typeface.BOLD), LinearLayout.LayoutParams(0, -2, 1f))
+            item.addView(text("", 15, Typeface.BOLD).apply { text = if (peer == state.number) t("Вы") else contactName(peer) }, LinearLayout.LayoutParams(0, -2, 1f))
             item.addView(text(if (peer in state.participants) "В звонке" else "Ожидание", 11, color = GRAY))
             rows.addView(item, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
         }
@@ -888,7 +902,7 @@ class MainActivity : ComponentActivity() {
             holder.title.text = contactName(item.peer); holder.preview.text = item.text
             holder.time.text = android.text.format.DateFormat.getMediumDateFormat(this@MainActivity).format(Date(item.createdAt))
             holder.itemView.isSoundEffectsEnabled = false
-            holder.itemView.setOnClickListener { Feedback.interfaceClick(this@MainActivity); hideKeyboard(); openConversation(item.peer) }
+            holder.itemView.setOnClickListener { Feedback.interfaceClick(this@MainActivity); hideKeyboard(); openConversation(item.peer, item.sequence) }
         }
     }
     private class SearchHolder(view: View, val title: TextView, val preview: TextView, val time: TextView) : RecyclerView.ViewHolder(view)
@@ -902,7 +916,7 @@ class MainActivity : ComponentActivity() {
             val icon = FrameLayout(this@MainActivity)
             item.addView(icon, size(36).apply { marginEnd = dp(12) })
             val labels = column()
-            val title = text("", 15, Typeface.BOLD)
+            val title = text("", 15, Typeface.BOLD).apply { maxLines = 2; ellipsize = TextUtils.TruncateAt.END }
             val detail = text("", 12, color = GRAY).apply { setPadding(0, dp(6), 0, dp(6)) }
             val stamp = text("", 10, color = GRAY)
             labels.addView(title); labels.addView(detail); labels.addView(stamp); item.addView(labels, LinearLayout.LayoutParams(0, -2, 1f))
@@ -911,14 +925,17 @@ class MainActivity : ComponentActivity() {
         override fun onBindViewHolder(holder: EventHolder, position: Int) {
             val item = getItem(position)
             holder.icon.removeAllViews(); holder.icon.addView(LineIcon(this@MainActivity, if (item.kind == "message") "chat" else "phone", INK), FrameLayout.LayoutParams(dp(23), dp(23), Gravity.CENTER))
-            holder.title.text = contactName(item.peer)
+            holder.title.text = item.peer.split(',').map { contactName(it.trim()) }.joinToString(", ")
             val outcome = when (item.outcome) { "completed" -> "Звонок завершён"; "missed" -> "Пропущенный звонок"; "declined" -> "Звонок отклонён"; "cancelled" -> "Звонок отменён"; else -> "Неуспешный звонок" }
             holder.detail.text = if (item.kind == "message") t(if (item.incoming) "Новое сообщение" else "Отправлено") else
                 t(if (item.incoming) "Входящий" else "Исходящий") + " · " + t(outcome) +
                     if (item.durationSeconds > 0) " · %02d:%02d".format(item.durationSeconds / 60, item.durationSeconds % 60) else ""
             holder.stamp.text = SimpleDateFormat("d MMM · HH:mm", resources.configuration.locales[0]).format(Date(item.timestamp))
             holder.itemView.isSoundEffectsEnabled = false
-            holder.itemView.setOnClickListener { Feedback.interfaceClick(this@MainActivity); openConversation(item.peer) }
+            holder.itemView.setOnClickListener {
+                Feedback.interfaceClick(this@MainActivity)
+                if (item.kind == ActivityEvent.CALL) { dial = item.peer; navigate("calls") } else openConversation(item.peer)
+            }
         }
     }
     private class EventHolder(view: View, val icon: FrameLayout, val title: TextView, val detail: TextView, val stamp: TextView) : RecyclerView.ViewHolder(view)

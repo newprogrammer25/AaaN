@@ -152,7 +152,15 @@ class UiFeaturesTest {
             instrumentation.runOnMainSync { query.setText("searchable") }
             await(activity) { labels(activity.window.decorView).contains(oldMessage) }
             screenshot("ui-search")
-            instrumentation.runOnMainSync { query.setText("deleted fixture") }
+            instrumentation.runOnMainSync {
+                descendants(activity.window.decorView).filterIsInstance<TextView>().first { it.text.toString() == oldMessage }.parent.let { (it as View).performClick() }
+            }
+            await(activity) {
+                labels(activity.window.decorView).contains(oldMessage) && descendants(activity.window.decorView).any { it.contentDescription?.toString() == "Отправить сообщение" }
+            }
+            click(activity, "Назад")
+            click(activity, "Поиск сообщений")
+            instrumentation.runOnMainSync { searchInput(activity, "Поиск сообщений").setText("deleted fixture") }
             await(activity) {
                 val visible = labels(activity.window.decorView)
                 visible.contains("Ничего не найдено") && visible.none { it == oldMessage || it == deletedText }
