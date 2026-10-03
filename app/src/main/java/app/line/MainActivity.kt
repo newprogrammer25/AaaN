@@ -303,7 +303,7 @@ class MainActivity : ComponentActivity() {
         numberBar.addView(ownAction)
         if (state.number.isNotEmpty()) layout.addView(numberBar) else { ownNumber = null; ownAction = null }
         val scroll = ScrollView(this).apply { isFillViewport = true; isVerticalScrollBarEnabled = false }
-        val keypad = column().apply { gravity = Gravity.CENTER; setPadding(0, dp(12), 0, dp(8)) }
+        val keypad = column().apply { gravity = Gravity.CENTER; setPadding(0, dp(8), 0, dp(4)) }
         scroll.addView(keypad); layout.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
         val input = EditText(this).apply {
             hint = t("Введите номер"); textSize = 30f; typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
@@ -312,11 +312,11 @@ class MainActivity : ComponentActivity() {
             showSoftInputOnFocus = false; setSingleLine(true); setText(dial); contentDescription = t("Номера участников")
             setPadding(0, dp(8), 0, dp(8)); addTextChangedListener(watcher { dial = it })
         }
-        keypad.addView(input, LinearLayout.LayoutParams(-1, dp(66)))
+        keypad.addView(input, LinearLayout.LayoutParams(-1, dp(54)))
         listOf(listOf("1", "2", "3"), listOf("4", "5", "6"), listOf("7", "8", "9"), listOf("add", "0", "delete")).forEach { keys ->
             val line = row().apply { gravity = Gravity.CENTER }
             keys.forEach { key ->
-                val slot = FrameLayout(this).apply { setPadding(dp(6), dp(4), dp(6), dp(4)) }
+                val slot = FrameLayout(this).apply { setPadding(dp(6), dp(2), dp(6), dp(2)) }
                 val cell = FrameLayout(this).apply {
                     background = ripple(if (key == "add" || key == "delete") BACKGROUND else WHITE, 34)
                     val face: View = if (key == "add" || key == "delete") LineIcon(this@MainActivity, key, INK) else text(key, 29)
@@ -331,8 +331,8 @@ class MainActivity : ComponentActivity() {
                     if (key == "delete") setOnLongClickListener { input.setText(""); true }
                     Motion.press(this)
                 }
-                slot.addView(cell, FrameLayout.LayoutParams(dp(64), dp(58), Gravity.CENTER))
-                line.addView(slot, LinearLayout.LayoutParams(0, dp(66), 1f))
+                slot.addView(cell, FrameLayout.LayoutParams(dp(52), dp(52), Gravity.CENTER))
+                line.addView(slot, LinearLayout.LayoutParams(0, dp(56), 1f))
             }
             keypad.addView(line, LinearLayout.LayoutParams(-1, -2))
         }
