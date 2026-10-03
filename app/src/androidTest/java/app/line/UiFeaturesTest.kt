@@ -11,6 +11,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.UiSelector
 import app.line.crypto.SecureStore
+import app.line.ui.Localized
 import org.junit.Assert.*
 import org.junit.Test
 import java.io.File
