@@ -610,7 +610,7 @@ class MainActivity : ComponentActivity() {
         val number = entry("Номер Line", numeric = true).apply { filters = arrayOf(InputFilter.LengthFilter(8)) }
         val name = entry("Имя (необязательно)")
         box.addView(number); box.addView(name, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
-        val dialog = AlertDialog.Builder(this).setTitle("Новый диалог").setView(box).setNegativeButton("Отмена", null).setPositiveButton("Открыть", null).create()
+        val dialog = LocalizedDialog(this).setTitle("Новый диалог").setView(box).setNegativeButton("Отмена", null).setPositiveButton("Открыть", null).create()
         dialog.setOnShowListener { dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
             val peer = number.text.toString().trim()
             if (!peer.matches(Regex("[0-9]{8}")) || peer == state.number) { number.error = t("Введите номер другого человека"); return@setOnClickListener }
@@ -624,10 +624,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun contactDetails() {
-        AlertDialog.Builder(this).setTitle(contactName(selectedPeer)).setItems(arrayOf("Проверить код безопасности", "Изменить имя", "Очистить переписку на этом устройстве")) { _, which ->
+        LocalizedDialog(this).setTitle(contactName(selectedPeer)).setItems(arrayOf("Проверить код безопасности", "Изменить имя", "Очистить переписку на этом устройстве")) { _, which ->
             if (which == 0) showSafety() else if (which == 2) {
                 val peer = selectedPeer
-                AlertDialog.Builder(this).setTitle("Удалить локальную историю?")
+                LocalizedDialog(this).setTitle("Удалить локальную историю?")
                     .setMessage("Копия у собеседника останется. Доверие и ключи контакта не сбрасываются.")
                     .setNegativeButton("Отмена", null).setPositiveButton("Удалить") { _, _ -> action {
                         service?.clearConversation(peer) ?: error("Сервис не готов")
@@ -636,7 +636,7 @@ class MainActivity : ComponentActivity() {
             } else {
                 val input = entry("Имя").apply { setText(prefs.getString("contact-$selectedPeer", "")) }
                 val box = column().apply { setPadding(dp(24), dp(12), dp(24), 0); addView(input) }
-                AlertDialog.Builder(this).setTitle("Имя контакта").setView(box).setNegativeButton("Отмена", null)
+                LocalizedDialog(this).setTitle("Имя контакта").setView(box).setNegativeButton("Отмена", null)
                     .setPositiveButton("Сохранить") { _, _ -> prefs.edit().putString("contact-$selectedPeer", input.text.toString().trim().take(40)).apply(); renderHeader() }.show()
             }
         }.show()
@@ -654,7 +654,7 @@ class MainActivity : ComponentActivity() {
             box.addView(text(safetyCode.chunked(5).joinToString(" "), 20, Typeface.BOLD).apply {
                 setPadding(0, dp(22), 0, dp(18)); setTextIsSelectable(true); setLineSpacing(dp(6).toFloat(), 1f)
             })
-            AlertDialog.Builder(this@MainActivity).setTitle("Проверка контакта").setView(box).setNegativeButton("Позже", null)
+            LocalizedDialog(this@MainActivity).setTitle("Проверка контакта").setView(box).setNegativeButton("Позже", null)
                 .setPositiveButton(if (peerVerified) "Готово" else "Код совпадает") { _, _ -> if (!peerVerified) action {
                     s.verifyPeer(peer); if (peer == selectedPeer) { peerVerified = true; refreshTrust() }
                 } }.show()
@@ -701,11 +701,11 @@ class MainActivity : ComponentActivity() {
             filters = arrayOf(InputFilter.LengthFilter(128)); importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
         }
         box.addView(code)
-        val dialog = AlertDialog.Builder(this).setTitle("Вход администратора").setView(box).setNegativeButton("Отмена", null).setPositiveButton("Войти", null).create()
+        val dialog = LocalizedDialog(this).setTitle("Вход администратора").setView(box).setNegativeButton("Отмена", null).setPositiveButton("Войти", null).create()
         adminLoginDialog = dialog
         dialog.setOnDismissListener { code.setText("") }
         dialog.setOnShowListener { dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-            if (code.text.length < 12) { code.error = "Не менее 12 символов"; return@setOnClickListener }
+            if (code.text.length < 12) { code.error = t("Не менее 12 символов"); return@setOnClickListener }
             val secret = code.text.toString()
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = false
             ui.launch {
@@ -715,7 +715,7 @@ class MainActivity : ComponentActivity() {
                     code.setText(""); dialog.dismiss(); adminLoginDialog = null; hideKeyboard(); showAdminPanel(s)
                 } catch (error: Exception) {
                     if (dialog.isShowing) {
-                        code.error = error.message ?: "Не удалось войти"
+                        code.error = t(error.message ?: "Не удалось войти")
                         dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = true
                     }
                 }
@@ -770,7 +770,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showQuality() {
-        AlertDialog.Builder(this).setTitle("Качество звука").setSingleChoiceItems(arrayOf("Высокое", "Для слабой сети"), if (state.highQuality) 0 else 1) { dialog, which ->
+        LocalizedDialog(this).setTitle("Качество звука").setSingleChoiceItems(arrayOf("Высокое", "Для слабой сети"), if (state.highQuality) 0 else 1) { dialog, which ->
             service?.setQuality(which == 0); dialog.dismiss(); if (screen == "profile") rebuild("profile", false)
         }.setNegativeButton("Отмена", null).show()
     }
@@ -781,13 +781,13 @@ class MainActivity : ComponentActivity() {
         box.addView(text("Код подключения выдаёт администратор вашего сервиса Line.", 14, color = GRAY))
         val code = entry("Код подключения").apply { maxLines = 4; filters = arrayOf(InputFilter.LengthFilter(4096)) }
         box.addView(code, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(16) })
-        val dialog = AlertDialog.Builder(this).setTitle("Подключить Line").setView(box).setNegativeButton("Отмена", null).setPositiveButton("Продолжить", null).create()
+        val dialog = LocalizedDialog(this).setTitle("Подключить Line").setView(box).setNegativeButton("Отмена", null).setPositiveButton("Продолжить", null).create()
         dialog.setOnShowListener { dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-            val profile = runCatching { ConnectionProfile.decode(code.text.toString()) }.getOrElse { code.error = it.message; return@setOnClickListener }
-            AlertDialog.Builder(this).setTitle("Подключиться?").setMessage("${URI(profile.apiUrl).host}\n\nИспользуйте код только из доверенного источника.")
+            val profile = runCatching { ConnectionProfile.decode(code.text.toString()) }.getOrElse { code.error = t(it.message ?: "Проверьте код подключения"); return@setOnClickListener }
+            LocalizedDialog(this).setTitle("Подключиться?").setMessage(URI(profile.apiUrl).host + "\n\n" + t("Используйте код только из доверенного источника."))
                 .setNegativeButton("Отмена", null).setPositiveButton("Подключиться") { _, _ ->
                     try { service?.configure(profile, state.highQuality) ?: error("Сервис запускается"); dialog.dismiss(); hideKeyboard() }
-                    catch (error: Exception) { code.error = error.message }
+                    catch (error: Exception) { code.error = t(error.message ?: "Проверьте настройки") }
                 }.show()
         } }; dialog.show()
     }
@@ -805,14 +805,14 @@ class MainActivity : ComponentActivity() {
         val apiPins = field("Ключи сертификата сообщений", old?.apiPins ?: "")
         val media = field("Адрес сервиса звонков", old?.mediaUrl ?: "")
         val mediaPins = field("Ключи сертификата звонков", old?.mediaPins ?: "")
-        val dialog = AlertDialog.Builder(this).setTitle("Настройки сервиса").setView(ScrollView(this).apply { addView(box) })
+        val dialog = LocalizedDialog(this).setTitle("Настройки сервиса").setView(ScrollView(this).apply { addView(box) })
             .setNegativeButton("Отмена", null).setPositiveButton("Сохранить", null).create()
         dialog.setOnShowListener { dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
             try {
                 check(service?.isAdmin() == true) { "Админ-сессия истекла" }
                 val profile = EndpointConfig(api.text.toString().trim(), apiPins.text.toString().trim(), media.text.toString().trim(), mediaPins.text.toString().trim())
                 profile.validate(); service?.configure(profile, state.highQuality) ?: error("Сервис пока не готов"); dialog.dismiss(); hideKeyboard()
-            } catch (error: Exception) { api.error = error.message ?: "Проверьте настройки" }
+            } catch (error: Exception) { api.error = t(error.message ?: "Проверьте настройки") }
         } }; dialog.show()
     }
 
@@ -959,9 +959,9 @@ class MainActivity : ComponentActivity() {
     private class MessageHolder(view: View, val date: TextView, val line: LinearLayout, val bubble: LinearLayout, val message: TextView, val meta: TextView) : RecyclerView.ViewHolder(view)
 
     private fun messageActions(message: ChatMessage) {
-        AlertDialog.Builder(this).setTitle("Сообщение").setItems(arrayOf("Копировать", "Удалить на этом устройстве")) { _, which ->
+        LocalizedDialog(this).setTitle("Сообщение").setItems(arrayOf("Копировать", "Удалить на этом устройстве")) { _, which ->
             if (which == 0) getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Сообщение", message.text))
-            else AlertDialog.Builder(this).setTitle("Удалить сообщение?").setMessage("Оно исчезнет из вашей истории. Копия собеседника останется.")
+            else LocalizedDialog(this).setTitle("Удалить сообщение?").setMessage("Оно исчезнет из вашей истории. Копия собеседника останется.")
                 .setNegativeButton("Отмена", null).setPositiveButton("Удалить") { _, _ -> action {
                     service?.deleteMessage(message.id) ?: error("Сервис не готов")
                     history = history.filterNot { it.id == message.id }; messageAdapter.submitList(history)
