@@ -927,7 +927,7 @@ class MainActivity : ComponentActivity() {
             holder.icon.removeAllViews(); holder.icon.addView(LineIcon(this@MainActivity, if (item.kind == "message") "chat" else "phone", INK), FrameLayout.LayoutParams(dp(23), dp(23), Gravity.CENTER))
             holder.title.text = item.peer.split(',').map { contactName(it.trim()) }.joinToString(", ")
             val outcome = when (item.outcome) { "completed" -> "Звонок завершён"; "missed" -> "Пропущенный звонок"; "declined" -> "Звонок отклонён"; "cancelled" -> "Звонок отменён"; else -> "Неуспешный звонок" }
-            holder.detail.text = if (item.kind == "message") t(if (item.incoming) "Новое сообщение" else "Отправлено") else
+            holder.detail.text = if (item.kind == "message") t(when (item.outcome) { "received" -> "Новое сообщение"; "sent" -> "Отправлено"; else -> "Не отправлено" }) else
                 t(if (item.incoming) "Входящий" else "Исходящий") + " · " + t(outcome) +
                     if (item.durationSeconds > 0) " · %02d:%02d".format(item.durationSeconds / 60, item.durationSeconds % 60) else ""
             holder.stamp.text = SimpleDateFormat("d MMM · HH:mm", resources.configuration.locales[0]).format(Date(item.timestamp))

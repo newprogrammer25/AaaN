@@ -145,7 +145,7 @@ class UiFlowTest {
     private fun setRussian() { context.getSharedPreferences("line-ui", 0).edit().putString("language", "ru").commit() }
     private fun clearFlowFixtures() {
         SecureStore(context).use { store ->
-            listOf("11001122", "22002233", "33003344", "11112222", "22223333").forEach { store.clearConversation(it) }
+            store.conversations(limit = 100).forEach { store.clearConversation(it.peer) }
         }
         context.getSharedPreferences("line-ui", 0).edit().apply {
             listOf("11001122", "22002233", "33003344").forEach { remove("contact-$it") }

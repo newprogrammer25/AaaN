@@ -74,9 +74,12 @@ class UiFeaturesTest {
     @Test fun notificationsJournalShowsCallOutcomeAndSettingsDialogHasSoundToggles() {
         setLanguage("ru")
         val messageId = "ui-notification-message-${UUID.randomUUID()}"
+        val failedId = "ui-notification-failed-${UUID.randomUUID()}"
         SecureStore(context).use { store ->
             store.saveMessage(peer, messageId, "Test body stays private", false, "received")
             store.recordMessageActivity(messageId, outgoing = false, outcome = "received")
+            store.saveMessage(peer, failedId, "Failed message fixture", true, "failed")
+            store.recordMessageActivity(failedId, outgoing = true, outcome = "failed")
             store.recordActivityEvent(ActivityEvent(
                 "ui-declined-${UUID.randomUUID()}", ActivityEvent.CALL, peer, true, "declined",
                 System.currentTimeMillis(),
@@ -88,7 +91,7 @@ class UiFeaturesTest {
             click(activity, "Уведомления")
             await(activity) {
                 val visible = labels(activity.window.decorView)
-                visible.any { it.contains("Звонок отклонён") } && visible.contains("Новое сообщение")
+                visible.any { it.contains("Звонок отклонён") } && visible.contains("Новое сообщение") && visible.contains("Не отправлено")
             }
             val journal = labels(activity.window.decorView)
             assertTrue(journal.any { it.contains("При закрытом приложении") || it.contains("пока приложение подключено") })
@@ -211,9 +214,8 @@ class UiFeaturesTest {
     private fun openProfile(activity: MainActivity) = clickTab(activity, 2)
 
     private fun clickTab(activity: MainActivity, index: Int) = instrumentation.runOnMainSync {
-        val root = activity.window.decorView as ViewGroup
-        val navigation = root.getChildAt(root.childCount - 1) as ViewGroup
-        navigation.getChildAt(index).performClick()
+        val label = Localized.text(context, listOf("Звонки", "Сообщения", "Профиль")[index])
+        descendants(activity.window.decorView).first { it.contentDescription?.toString() == label }.performClick()
     }
 
     private fun chooseLanguage(activity: MainActivity, label: String, option: String, code: String) {

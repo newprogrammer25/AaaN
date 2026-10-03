@@ -100,7 +100,8 @@ class CallService : Service() {
                 }
             }
         }
-        work { secure.await(); connect() }
+        val initialGeneration = generation
+        work { secure.await(); if (generation == initialGeneration) connect() }
     }
 
     override fun onBind(intent: Intent): IBinder = binder

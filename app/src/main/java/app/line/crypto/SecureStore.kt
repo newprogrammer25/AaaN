@@ -724,7 +724,7 @@ class SecureStore(context: Context) : AutoCloseable {
         require(registration in 1..16380) { "Invalid Signal registration id" }
         val signedJson = bundle.getJSONObject("signedPreKey")
         val signedId = signedJson.getInt("id").also { require(it >= 0) }
-        val signedPublic = ECPublicKey.fromPublicKeyBytes(decode(signedJson.getString("publicKey")))
+        val signedPublic = ECPublicKey(decode(signedJson.getString("publicKey")))
         val signedSignature = decode(signedJson.getString("signature"))
         check(remoteIdentity.publicKey.verifySignature(signedPublic.serialize(), signedSignature)) {
             "Invalid signed prekey signature"
@@ -746,7 +746,7 @@ class SecureStore(context: Context) : AutoCloseable {
             preKey = null
         } else {
             preKeyId = oneTimeJson.getInt("id").also { require(it >= 0) }
-            preKey = ECPublicKey.fromPublicKeyBytes(decode(oneTimeJson.getString("publicKey")))
+            preKey = ECPublicKey(decode(oneTimeJson.getString("publicKey")))
         }
         return PreKeyBundle(
             registration,
