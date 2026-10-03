@@ -19,12 +19,14 @@ The service listens on `0.0.0.0:3000`. `GET /` and `/health` return only `{"stat
 | --- | --- |
 | `DATA_FILE` | Persistent versioned JSON store. Defaults to `server/data/identities.json`; contains SHA-256 installation-token hashes, 8-digit numbers, and public key bundles only. |
 | `PORT`, `HOST` | HTTP listen port and interface; defaults to `3000` and `0.0.0.0`. |
-| `LIVEKIT_URL` | Public LiveKit WebSocket URL, for example `wss://rtc.example.org`. |
+| `LIVEKIT_URL` | Public LiveKit WebSocket URL, for example `wss://rtc.example.org`. Plain `ws://` is rejected. |
 | `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` | Server-only LiveKit credentials. Keep the secret off clients. If any media setting is missing or invalid, registration and messaging still work but joining returns `media_not_configured`. |
 | `ADMIN_PASSWORD_HASH` | Optional scrypt verifier (`scrypt$<salt-base64>$<digest-base64>`). Admin access is disabled when missing or malformed; never configure a plaintext admin code. |
 | `ADMIN_DATA_FILE` | Persistent admin settings and blocklist. Defaults to `${DATA_FILE}.admin.json`; atomic writes use mode `0600`, and an invalid existing file stops startup rather than silently resetting controls. |
 
 Room access tokens are signed by `livekit-server-sdk` 2.19.1 with a 120-second TTL. Each grant is restricted to one roster room, allows microphone publishing and subscription, and disallows data publishing. LiveKit API secrets are never returned to clients. Chat and signaling work without LiveKit being configured; the backend will not issue placeholder media tokens.
+
+With media configured, the API explicitly creates rooms before announcing calls and limits each room to its roster size. Set `room.auto_create: false` in LiveKit as in `deploy/livekit.yaml`; otherwise an unexpired participant token can recreate a deleted room. Creation failures return `media_unavailable` without invitations. Deletion is best-effort, not immediate token revocation: if deletion fails, an existing room may remain joinable until its grants expire.
 
 The JSON store is written by an atomic rename with mode `0600`. Version-1 stores containing `{ "version": 1, "identities": { "<token hash>": "<number>" } }` are accepted. The next successful registration with a public bundle writes version 2 and preserves that installation's existing number. The store is a single-process file; do not run multiple API replicas against it. Back up the file securely.
 

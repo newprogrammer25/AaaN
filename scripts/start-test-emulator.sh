@@ -12,4 +12,5 @@ fi
 accel=auto
 if [[ ! -r /dev/kvm ]]; then accel=off; fi
 exec "$ANDROID_HOME/emulator/emulator" -avd line-light -no-window -no-audio -no-boot-anim \
-  -no-snapshot -accel "$accel" -gpu swiftshader_indirect -cores 1 -memory 3072
+  -no-snapshot -accel "$accel" -gpu swiftshader_indirect -cores 1 \
+  -memory "${LINE_EMULATOR_MEMORY_MB:-1536}" -skin 720x1280

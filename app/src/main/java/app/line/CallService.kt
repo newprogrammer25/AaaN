@@ -3,6 +3,7 @@ package app.line
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.*
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
@@ -10,6 +11,7 @@ import android.net.*
 import android.os.*
 import app.line.crypto.ChatMessage
 import app.line.crypto.SecureStore
+import app.line.media.CallMediaEngine
 import app.line.media.LiveCallEngine
 import app.line.media.MediaEvent
 import kotlinx.coroutines.*
@@ -27,6 +29,8 @@ class CallService : Service() {
     private val listeners = mutableSetOf<(CallState) -> Unit>()
     private val prefs by lazy { getSharedPreferences("line", MODE_PRIVATE) }
     private val secure by lazy { scope.async(Dispatchers.IO) { SecureStore(this@CallService) } }
+    internal var publicBundleProvider: suspend () -> JSONObject = { db { it.publicBundle() } }
+    internal var httpClientFactory: (EndpointConfig) -> OkHttpClient = { it.http() }
     private var http: OkHttpClient? = null
     private var socket: WebSocket? = null
     private var generation = 0
@@ -42,7 +46,11 @@ class CallService : Service() {
     private var owner = ""
     private var roomKey: ByteArray? = null
     private val pendingKeys = mutableMapOf<String, JSONObject>()
-    private var engine: LiveCallEngine? = null
+    internal var mediaEngineFactory: (Context, CoroutineScope, (MediaEvent) -> Unit) -> CallMediaEngine =
+        { context, engineScope, onEvent -> LiveCallEngine(context, engineScope, onEvent) }
+    private var engine: CallMediaEngine? = null
+    private var callOperation: Job? = null
+    private var callOperationEpoch = 0
     private var foreground = false
     private var wakeLock: PowerManager.WakeLock? = null
     private var callTimeout: Job? = null
@@ -61,6 +69,7 @@ class CallService : Service() {
     }
     var state = CallState()
         private set
+    internal val callOperationActive: Boolean get() = callOperation?.isActive == true
 
     override fun onCreate() {
         super.onCreate()
@@ -118,6 +127,8 @@ class CallService : Service() {
         value.validate()
         val old = config()
         require(old == null || old.apiUrl == value.apiUrl) { "Для другого сервера нужен отдельный профиль/очистка данных: номера и доверие не переносятся" }
+        generation++
+        cancelLookups("Connection settings changed")
         prefs.edit().putString("endpoint", value.apiUrl).putString("api_pins", value.apiPins)
             .putString("media_endpoint", value.mediaUrl).putString("media_pins", value.mediaPins)
             .putBoolean("high_quality", highQuality).apply()
@@ -188,24 +199,77 @@ class CallService : Service() {
     private fun token(): String = prefs.getString("token", null) ?: ByteArray(32).also { SecureRandom().nextBytes(it) }
         .joinToString("") { "%02x".format(it.toInt() and 255) }.also { prefs.edit().putString("token", it).commit() }
 
+    private fun cancelLookups(reason: String) {
+        lookups.values.forEach { it.completeExceptionally(IllegalStateException(reason)) }
+        lookups.clear()
+    }
+
+    private fun launchCallOperation(phase: Phase, expectedCallId: String, block: suspend (Int, String) -> Unit) {
+        callOperation?.cancel()
+        val epoch = ++callOperationEpoch
+        val job = scope.launch(start = CoroutineStart.LAZY) {
+            val current = currentCoroutineContext()[Job]
+            try {
+                checkCallOperation(epoch, phase, expectedCallId)
+                block(epoch, expectedCallId)
+            } catch (timeout: TimeoutCancellationException) {
+                if (isCallOperationCurrent(epoch, phase, expectedCallId)) {
+                    finish("Нет ответа или соединения. Звонок завершён")
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                if (callOperationEpoch == epoch && callId == expectedCallId && state.phase != Phase.IDLE) {
+                    finish("Ошибка защищённого соединения. Проверьте SAS участников")
+                }
+            } finally {
+                if (callOperation === current) callOperation = null
+            }
+        }
+        callOperation = job
+        job.start()
+    }
+
+    private fun isCallOperationCurrent(epoch: Int, phase: Phase, expectedCallId: String): Boolean =
+        callOperationEpoch == epoch && callId == expectedCallId && state.phase == phase
+
+    private suspend fun checkCallOperation(epoch: Int, phase: Phase, expectedCallId: String) {
+        currentCoroutineContext().ensureActive()
+        check(isCallOperationCurrent(epoch, phase, expectedCallId)) { "Call operation is no longer current" }
+    }
+
+    private suspend fun checkMediaCallOperation(epoch: Int, expectedCallId: String) {
+        currentCoroutineContext().ensureActive()
+        check(callOperationEpoch == epoch && callId == expectedCallId &&
+            state.phase in setOf(Phase.CONNECTING, Phase.CONNECTED)) { "Call operation is no longer current" }
+    }
+
     private suspend fun connect() {
         retryJob?.cancel()
         registrationTimeout?.cancel()
-        generation++
+        val epoch = ++generation
         lockAdmin()
-        val epoch = generation
+        cancelLookups("Connection changed")
         socket?.cancel()
         socket = null
         http?.dispatcher?.executorService?.shutdown()
         http?.connectionPool?.evictAll()
+        http = null
         val endpoints = config() ?: run {
             update(state.copy(online = false, mediaReady = false, configReady = false, message = "Подключите Line, чтобы получить номер"))
             return
         }
-        val bundle = db { it.publicBundle() }
-        http = endpoints.http()
+        val bundle = publicBundleProvider()
+        if (epoch != generation) return
+        val client = httpClientFactory(endpoints)
+        if (epoch != generation) {
+            client.dispatcher.executorService.shutdown()
+            client.connectionPool.evictAll()
+            return
+        }
+        http = client
         update(state.copy(online = false, mediaReady = false, message = "Подключение…"))
-        socket = http!!.newWebSocket(Request.Builder().url(endpoints.apiUrl).build(), object : WebSocketListener() {
+        socket = client.newWebSocket(Request.Builder().url(endpoints.apiUrl).build(), object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
                 scope.launch { if (epoch == generation) {
                     ws.send(JSONObject().put("type", "register").put("token", token()).put("bundle", bundle).toString())
@@ -240,7 +304,7 @@ class CallService : Service() {
         lockAdmin()
         registrationTimeout?.cancel()
         socket?.cancel(); socket = null
-        lookups.values.forEach { it.completeExceptionally(IllegalStateException("Offline")) }; lookups.clear()
+        cancelLookups("Offline")
         if (state.phase != Phase.IDLE) finish("Соединение потеряно. Звонок завершён", notifyServer = false)
         update(state.copy(online = false, mediaReady = false, message = "Не удалось подключиться. Проверьте настройки сервиса"))
         retryJob?.cancel()
@@ -347,7 +411,7 @@ class CallService : Service() {
             "sent" -> {
                 val id = message.getString("id")
                 if (!chatEnvelopeIds.remove(id)) return
-                db { it.removeOutbox(id); it.updateMessageStatus(id, "sent") }
+                db { it.acknowledgeSent(id) }
                 update(state.copy(chatVersion = state.chatVersion + 1))
             }
             "call_created" -> {
@@ -356,17 +420,27 @@ class CallService : Service() {
                 require(strings(message.getJSONArray("members")).toSet() == state.members.toSet())
                 setupCall(message)
                 roomKey = ByteArray(32).also { SecureRandom().nextBytes(it) }
-                val payload = JSONObject().put("kind", "call-key").put("callId", callId).put("room", callRoom)
-                    .put("owner", owner).put("members", JSONArray(state.members))
-                    .put("key", android.util.Base64.encodeToString(roomKey, android.util.Base64.NO_WRAP))
-                for (number in state.members.filter { it != state.number }) {
-                    preparePeer(number)
-                    val id = UUID.randomUUID().toString()
-                    val encrypted = db { it.encrypt(number, payload.toString().toByteArray()) }
-                    check(send("envelope", JSONObject().put("to", number).put("id", id).put("cipherType", encrypted.cipherType).put("body", encrypted.body)))
+                val peers = state.members.filter { it != state.number }
+                val expectedCallId = callId
+                launchCallOperation(Phase.OUTGOING, expectedCallId) { epoch, call ->
+                    for (number in peers) {
+                        checkCallOperation(epoch, Phase.OUTGOING, call)
+                        preparePeer(number)
+                        checkCallOperation(epoch, Phase.OUTGOING, call)
+                        val id = UUID.randomUUID().toString()
+                        val key = roomKey ?: error("Missing call key")
+                        val payload = JSONObject().put("kind", "call-key").put("callId", call)
+                            .put("room", callRoom).put("owner", owner).put("members", JSONArray(state.members))
+                            .put("key", android.util.Base64.encodeToString(key, android.util.Base64.NO_WRAP))
+                        val encrypted = db { it.encrypt(number, payload.toString().toByteArray()) }
+                        checkCallOperation(epoch, Phase.OUTGOING, call)
+                        check(send("envelope", JSONObject().put("to", number).put("id", id)
+                            .put("cipherType", encrypted.cipherType).put("body", encrypted.body)))
+                    }
+                    checkCallOperation(epoch, Phase.OUTGOING, call)
+                    check(send("join_call", JSONObject().put("callId", call)))
+                    update(state.copy(phase = Phase.CONNECTING, message = "Соединяем зашифрованную группу…"))
                 }
-                check(send("join_call", JSONObject().put("callId", callId)))
-                update(state.copy(phase = Phase.CONNECTING, message = "Соединяем зашифрованную группу…"))
             }
             "incoming" -> {
                 if (state.phase != Phase.IDLE) return
@@ -382,9 +456,19 @@ class CallService : Service() {
                 require(message.getString("url").trimEnd('/') == endpoints.mediaUrl.trimEnd('/'))
                 val key = roomKey ?: error("Missing E2EE key")
                 val epochCall = callId
-                engine = LiveCallEngine(this, scope) { event -> work { if (callId == epochCall && epochCall.isNotEmpty()) mediaEvent(event) } }
+                engine = mediaEngineFactory(this, scope) { event ->
+                    work { if (callId == epochCall && epochCall.isNotEmpty()) mediaEvent(event) }
+                }
                 update(state.copy(phase = Phase.CONNECTING, message = "LiveKit · устанавливаем E2EE…"))
-                engine!!.connect(endpoints.mediaUrl, message.getString("token"), key, http!!, state.highQuality)
+                val media = engine!!
+                val token = message.getString("token")
+                val client = http ?: error("No signaling client")
+                val highQuality = state.highQuality
+                launchCallOperation(Phase.CONNECTING, epochCall) { epoch, call ->
+                    checkCallOperation(epoch, Phase.CONNECTING, call)
+                    media.connect(endpoints.mediaUrl, token, key, client, highQuality)
+                    checkMediaCallOperation(epoch, call)
+                }
             }
             "ended" -> if (message.optString("callId") == callId) finish("Групповой звонок завершён", false)
             "error" -> {
@@ -454,17 +538,47 @@ class CallService : Service() {
                         val members = intent.getStringArrayListExtra("members")?.distinct() ?: emptyList()
                         require(members.size in 1 until state.maxParticipants && state.number !in members && state.online && state.mediaReady && state.callsEnabled)
                         update(state.copy(phase = Phase.OUTGOING, peer = members.joinToString(", "), members = listOf(state.number) + members, message = "Создаём группу…"))
-                        withTimeout(20_000) { for (number in members) preparePeer(number) }
-                        acquireWakeLock()
-                        check(send("create_call", JSONObject().put("members", JSONArray(members))))
-                        callTimeout = scope.launch { delay(45_000); if (state.phase != Phase.CONNECTED) finish("Не удалось установить звонок") }
+                        launchCallOperation(Phase.OUTGOING, "") { epoch, call ->
+                            withTimeout(20_000) {
+                                for (number in members) {
+                                    checkCallOperation(epoch, Phase.OUTGOING, call)
+                                    preparePeer(number)
+                                    checkCallOperation(epoch, Phase.OUTGOING, call)
+                                }
+                            }
+                            checkCallOperation(epoch, Phase.OUTGOING, call)
+                            acquireWakeLock()
+                            check(send("create_call", JSONObject().put("members", JSONArray(members))))
+                            callTimeout = scope.launch {
+                                delay(45_000)
+                                if (state.phase != Phase.CONNECTED) finish("Не удалось установить звонок")
+                            }
+                        }
                     } else if (intent.action == "accept" && state.phase == Phase.INCOMING) {
-                        require(state.members.filter { it != state.number }.all { verified(it) }) { "Verify SAS for all participants" }
-                        withTimeout(10_000) { while (roomKey == null) { adoptKey(); delay(100) } }
-                        acquireWakeLock()
-                        update(state.copy(phase = Phase.CONNECTING, message = "Соединяем…"))
-                        check(send("join_call", JSONObject().put("callId", callId)))
-                    } else if (state.phase == Phase.IDLE) finish("Готов к звонку")
+                        val expectedCallId = callId
+                        launchCallOperation(Phase.INCOMING, expectedCallId) { epoch, call ->
+                            for (number in state.members.filter { it != state.number }) {
+                                val trusted = verified(number)
+                                checkCallOperation(epoch, Phase.INCOMING, call)
+                                check(trusted) { "Verify SAS for all participants" }
+                            }
+                            withTimeout(10_000) {
+                                while (roomKey == null) {
+                                    checkCallOperation(epoch, Phase.INCOMING, call)
+                                    adoptKey()
+                                    if (roomKey == null) delay(100)
+                                    checkCallOperation(epoch, Phase.INCOMING, call)
+                                }
+                            }
+                            checkCallOperation(epoch, Phase.INCOMING, call)
+                            acquireWakeLock()
+                            update(state.copy(phase = Phase.CONNECTING, message = "Соединяем…"))
+                            checkCallOperation(epoch, Phase.CONNECTING, call)
+                            check(send("join_call", JSONObject().put("callId", call)))
+                        }
+                    } else if (state.phase == Phase.IDLE) {
+                        finish("Готов к звонку")
+                    }
                 }
             }
             "mute" -> toggleMute()
@@ -502,6 +616,10 @@ class CallService : Service() {
 
     private suspend fun finish(message: String, notifyServer: Boolean = true) {
         callTimeout?.cancel(); callTimeout = null
+        val operation = callOperation
+        callOperation = null
+        callOperationEpoch++
+        if (operation != currentCoroutineContext()[Job]) operation?.cancel()
         if (notifyServer && callId.isNotEmpty()) send(if (state.phase == Phase.INCOMING) "decline_call" else "leave_call", JSONObject().put("callId", callId))
         callId = ""; callRoom = ""; owner = ""
         roomKey?.fill(0); roomKey = null; pendingKeys.clear()
@@ -531,6 +649,10 @@ class CallService : Service() {
     override fun onDestroy() {
         lockAdmin()
         generation++
+        cancelLookups("Service destroyed")
+        callOperationEpoch++
+        callOperation?.cancel(); callOperation = null
+        retryJob?.cancel(); registrationTimeout?.cancel(); callTimeout?.cancel()
         incoming.close()
         socket?.cancel(); socket = null
         if (wakeLock?.isHeld == true) wakeLock?.release()

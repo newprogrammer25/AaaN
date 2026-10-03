@@ -253,7 +253,13 @@ test('encrypted envelopes relay only to online targets, deduplicate replays, and
 
 test('group calls issue verifiable, short-lived, room-scoped microphone-only LiveKit grants', async () => {
   const deletedRooms = [];
-  const resource = await setup({ env: LIVEKIT_ENV, ringingTimeoutMs: 300, deleteRoom: (room) => deletedRooms.push(room) });
+  const createdRooms = [];
+  const resource = await setup({
+    env: LIVEKIT_ENV,
+    ringingTimeoutMs: 300,
+    createRoom: async (roomOptions) => { createdRooms.push(roomOptions); },
+    deleteRoom: (room) => deletedRooms.push(room),
+  });
   const owner = await openSocket(resource);
   const memberA = await openSocket(resource);
   const memberB = await openSocket(resource);
@@ -275,6 +281,7 @@ test('group calls issue verifiable, short-lived, room-scoped microphone-only Liv
   assert.equal(call.owner, ownerInfo.number);
   assert.deepEqual(incomingA, { type: 'incoming', callId: call.callId, room: call.room, members: call.members, owner: call.owner });
   assert.deepEqual(incomingB, incomingA);
+  assert.deepEqual(createdRooms, [{ name: call.room, maxParticipants: 3 }]);
 
   const unauthorized = await sendRequest(outsider, { type: 'join_call', callId: call.callId }, (item) => item.type === 'error');
   assert.equal(unauthorized.code, 'unauthorized');
@@ -318,12 +325,90 @@ test('group calls issue verifiable, short-lived, room-scoped microphone-only Liv
   assert.deepEqual(deletedRooms, [call.room]);
 });
 
-test('missing LiveKit configuration never creates a placeholder token', async () => {
-  const resource = await setup();
+test('failed room provisioning announces no call, cleans up, and releases the roster', async () => {
+  const createdRooms = [];
+  let reportDeletion;
+  const deletionReported = new Promise((resolve) => { reportDeletion = resolve; });
+  const resource = await setup({
+    env: LIVEKIT_ENV,
+    createRoom: async (options) => {
+      createdRooms.push(options);
+      if (createdRooms.length === 1) throw new Error('provisioning failed');
+    },
+    deleteRoom: (room) => reportDeletion(room),
+  });
+  const owner = await openSocket(resource);
+  const member = await openSocket(resource);
+  await register(owner, token('a'), bundle(71, 0));
+  const memberInfo = await register(member, token('b'), bundle(72, 0));
+
+  const failure = waitFor(owner, (message) => message.type === 'error');
+  owner.send(JSON.stringify({ type: 'create_call', members: [memberInfo.number] }));
+  assert.equal((await failure).code, 'media_unavailable');
+  const firstRoom = await deletionReported;
+  assert.equal(firstRoom, createdRooms[0].name);
+  assert.deepEqual(createdRooms[0], { name: firstRoom, maxParticipants: 2 });
+  assert.equal(await waitFor(member, (message) => message.type === 'incoming', 100).then(() => true, () => false), false);
+
+  const created = waitFor(owner, (message) => message.type === 'call_created');
+  const incoming = waitFor(member, (message) => message.type === 'incoming');
+  owner.send(JSON.stringify({ type: 'create_call', members: [memberInfo.number] }));
+  const [call] = await Promise.all([created, incoming]);
+  assert.deepEqual(createdRooms[1], { name: call.room, maxParticipants: 2 });
+});
+
+test('calls disabled during room provisioning cannot announce or revive the call', async () => {
+  let releaseProvisioning;
+  let reportProvisioningStarted;
+  let reportDeletion;
+  const provisioningGate = new Promise((resolve) => { releaseProvisioning = resolve; });
+  const provisioningStarted = new Promise((resolve) => { reportProvisioningStarted = resolve; });
+  const deletionReported = new Promise((resolve) => { reportDeletion = resolve; });
+  let roomName;
+  const resource = await setup({
+    env: { ...LIVEKIT_ENV, ...adminEnv() },
+    createRoom: async (options) => {
+      roomName = options.name;
+      assert.equal(options.maxParticipants, 2);
+      reportProvisioningStarted();
+      await provisioningGate;
+    },
+    deleteRoom: (room) => reportDeletion(room),
+  });
+  const owner = await openSocket(resource);
+  const member = await openSocket(resource);
+  await register(owner, token('c'), bundle(73, 0));
+  const memberInfo = await register(member, token('d'), bundle(74, 0));
+  assert.equal((await adminLogin(owner)).ok, true);
+
+  owner.send(JSON.stringify({ type: 'create_call', members: [memberInfo.number] }));
+  await provisioningStarted;
+  assert.equal((await adminAction(owner, 'update_settings', { settings: { callsEnabled: false } })).ok, true);
+  const callCreated = waitFor(owner, (message) => message.type === 'call_created', 150).then(() => true, () => false);
+  const invited = waitFor(member, (message) => message.type === 'incoming', 150).then(() => true, () => false);
+  releaseProvisioning();
+  assert.equal(await deletionReported, roomName);
+  assert.equal(await callCreated, false);
+  assert.equal(await invited, false);
+
+  assert.match(roomName, /^line-[0-9a-f-]{36}$/i);
+  await adminAction(owner, 'update_settings', { settings: { callsEnabled: true } });
+  const staleGrant = await sendRequest(owner, { type: 'join_call', callId: roomName.slice('line-'.length) },
+    (message) => message.type === 'error');
+  assert.equal(staleGrant.code, 'unauthorized');
+});
+
+for (const [kind, env] of [
+  ['missing', {}],
+  ['insecure', { ...LIVEKIT_ENV, LIVEKIT_URL: 'ws://rtc.example.test' }],
+]) {
+test(`${kind} LiveKit configuration never creates a placeholder token`, async () => {
+  const resource = await setup({ env });
   const owner = await openSocket(resource);
   const member = await openSocket(resource);
   const ownerInfo = await register(owner, token('6'), bundle(25, 0));
   const memberInfo = await register(member, token('7'), bundle(26, 0));
+  assert.equal(ownerInfo.mediaReady, false);
   const created = waitFor(owner, (item) => item.type === 'call_created');
   const incoming = waitFor(member, (item) => item.type === 'incoming');
   owner.send(JSON.stringify({ type: 'create_call', members: [memberInfo.number] }));
@@ -336,10 +421,48 @@ test('missing LiveKit configuration never creates a placeholder token', async ()
   assert.deepEqual(await ended, { type: 'ended', callId: call.callId, reason: 'declined' });
   assert.match(ownerInfo.number, /^\d{8}$/);
 });
+}
+
+test('LiveKit media configuration requires a clean WSS root URL and valid host', async () => {
+  const invalidUrls = [
+    'ws://rtc.example.test',
+    'https://rtc.example.test',
+    'wss:///signal',
+    'wss://user@rtc.example.test',
+    'wss://user:pass@rtc.example.test',
+    'wss://@rtc.example.test',
+    'wss://rtc.example.test?token=secret',
+    'wss://rtc.example.test?',
+    'wss://rtc.example.test#fragment',
+    'wss://rtc.example.test#',
+    'wss://rtc.example.test/room',
+    'wss://bad_host.example.test',
+    'wss://-bad.example.test',
+    'wss://example..test',
+    'wss://rtc.example.test:0',
+    'wss://rtc.example.test:65536',
+  ];
+
+  for (const [index, LIVEKIT_URL] of invalidUrls.entries()) {
+    const resource = await setup({ env: { ...LIVEKIT_ENV, LIVEKIT_URL } });
+    const socket = await openSocket(resource);
+    const registered = await register(socket, token(String(index % 10)), bundle(50 + index, 0));
+    assert.equal(registered.mediaReady, false, `Unexpectedly accepted ${LIVEKIT_URL}`);
+  }
+
+  const rootUrl = await setup({ env: { ...LIVEKIT_ENV, LIVEKIT_URL: 'wss://rtc.example.test/' } });
+  const socket = await openSocket(rootUrl);
+  assert.equal((await register(socket, token('8'), bundle(70, 0))).mediaReady, true);
+});
 
 test('decline, disconnect, and unanswered timeout end the entire fixed roster', async () => {
   const deletedRooms = [];
-  const resource = await setup({ deleteRoom: (room) => deletedRooms.push(room), ringingTimeoutMs: 500 });
+  const resource = await setup({
+    env: LIVEKIT_ENV,
+    createRoom: async () => {},
+    deleteRoom: (room) => deletedRooms.push(room),
+    ringingTimeoutMs: 500,
+  });
   const owner = await openSocket(resource);
   const member = await openSocket(resource);
   const memberInfo = await register(member, token('8'), bundle(27, 0));

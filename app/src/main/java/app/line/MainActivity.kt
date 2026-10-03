@@ -498,11 +498,15 @@ class MainActivity : ComponentActivity() {
         settings.addView(divider())
         settings.addView(settingsRow("Качество звука", if (state.highQuality) "Высокое" else "Для слабой сети", "speaker") { showQuality() })
         settings.addView(divider())
-        settings.addView(settingsRow("О приложении", "0.4", "shield") {
-            info("Line 0.4", "Звонки и сообщения. Содержимое защищено на устройствах; сервис и сеть могут видеть участников и время соединений. Новые входящие доступны при открытом приложении.")
+        val version = installedVersionName()
+        settings.addView(settingsRow("О приложении", version, "shield") {
+            info("Line $version", "Звонки и сообщения. Содержимое защищено на устройствах; сервис и сеть могут видеть участников и время соединений. Новые входящие доступны при открытом приложении.")
         })
         body.addView(settings)
     }
+
+    @Suppress("DEPRECATION")
+    private fun installedVersionName(): String = packageManager.getPackageInfo(packageName, 0).versionName ?: "unknown"
 
     private fun showAdminLogin() {
         val s = service ?: return

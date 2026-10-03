@@ -1,6 +1,7 @@
 import { createHash, randomInt, randomUUID, scrypt, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
 import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
+import { isIP } from 'node:net';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AccessToken, RoomServiceClient, TrackSource } from 'livekit-server-sdk';
@@ -236,6 +237,16 @@ async function saveAdminState(dataFile, state) {
   }
 }
 
+function validMediaHostname(hostname) {
+  const ipAddress = hostname.startsWith('[') && hostname.endsWith(']')
+    ? hostname.slice(1, -1)
+    : hostname;
+  if (isIP(ipAddress)) return true;
+  if (hostname.length > 253) return false;
+  return hostname.split('.').every((label) => label.length <= 63
+    && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label));
+}
+
 function buildMediaConfig(env) {
   const value = env.LIVEKIT_URL?.trim();
   const apiKey = env.LIVEKIT_API_KEY?.trim();
@@ -244,10 +255,11 @@ function buildMediaConfig(env) {
 
   try {
     const url = new URL(value);
-    if (!['wss:', 'ws:'].includes(url.protocol) || !url.hostname || url.username || url.password
-      || url.search || url.hash || url.pathname !== '/') return undefined;
+    const authority = /^wss:\/\/([^/?#]*)/i.exec(value)?.[1];
+    if (url.protocol !== 'wss:' || !authority || authority.includes('@') || !validMediaHostname(url.hostname)
+      || url.port === '0' || url.pathname !== '/' || value.includes('?') || value.includes('#')) return undefined;
     const mediaUrl = url.origin;
-    const apiUrl = mediaUrl.replace(/^wss:/i, 'https:').replace(/^ws:/i, 'http:');
+    const apiUrl = mediaUrl.replace(/^wss:/i, 'https:');
     return { mediaUrl, apiUrl, apiKey, apiSecret };
   } catch {
     return undefined;
@@ -325,9 +337,10 @@ export async function createSignalingServer(options = {}) {
     return token.toJwt();
   });
   let roomService;
-  if (mediaConfig && !options.deleteRoom) {
+  if (mediaConfig && (!options.createRoom || !options.deleteRoom)) {
     roomService = new RoomServiceClient(mediaConfig.apiUrl, mediaConfig.apiKey, mediaConfig.apiSecret);
   }
+  const createRoom = options.createRoom ?? (roomService ? (roomOptions) => roomService.createRoom(roomOptions) : undefined);
   const deleteRoom = options.deleteRoom ?? (roomService ? (room) => roomService.deleteRoom(room) : undefined);
 
   let storeQueue = Promise.resolve();
@@ -637,9 +650,13 @@ export async function createSignalingServer(options = {}) {
     for (const number of call.members) {
       if (memberships.get(number) === call.id) memberships.delete(number);
       const member = sessions.get(number);
-      if (member) send(member.socket, { type: 'ended', callId: call.id, reason });
+      if (call.announced && member) send(member.socket, { type: 'ended', callId: call.id, reason });
     }
-    if (deleteRoom) Promise.resolve(deleteRoom(call.room)).catch(() => {});
+    if (call.roomProvisioned) deleteRoomBestEffort(call.room);
+  }
+
+  function deleteRoomBestEffort(room) {
+    if (deleteRoom) Promise.resolve().then(() => deleteRoom(room)).catch(() => {});
   }
 
   function endCallForNumber(number, reason) {
@@ -809,7 +826,7 @@ export async function createSignalingServer(options = {}) {
     send(session.socket, { type: 'sent', id: message.id });
   }
 
-  function createCall(session, members) {
+  async function createCall(session, members) {
     if (!adminSettings.callsEnabled) return error(session.socket, 'calls_disabled');
     if (!Array.isArray(members) || members.length < 1 || members.length > adminSettings.maxParticipants - 1
       || members.some((member) => typeof member !== 'string' || !NUMBER_PATTERN.test(member) || member === session.number)
@@ -825,12 +842,42 @@ export async function createSignalingServer(options = {}) {
     const callId = randomUUID();
     const room = `line-${callId}`;
     const roster = [session.number, ...members];
-    const call = { id: callId, room, owner: session.number, members: roster, joined: new Set(), timer: undefined };
+    const call = {
+      id: callId, room, owner: session.number, members: roster, joined: new Set(), timer: undefined,
+      announced: false, roomProvisioned: false,
+    };
     calls.set(callId, call);
     for (const number of roster) memberships.set(number, callId);
     call.timer = setTimeout(() => endCall(call, 'timeout'), ringingTimeoutMs);
     call.timer.unref?.();
 
+    if (mediaConfig && createRoom) {
+      try {
+        await createRoom({ name: room, maxParticipants: roster.length });
+        call.roomProvisioned = true;
+      } catch {
+        deleteRoomBestEffort(room);
+        if (calls.get(callId) === call) {
+          endCall(call, 'media_unavailable');
+          error(session.socket, 'media_unavailable');
+        }
+        return;
+      }
+    }
+
+    const stillActive = calls.get(callId) === call && adminSettings.callsEnabled
+      && call.members.every((number) => {
+        const member = sessions.get(number);
+        return member && !member.closed && member.socket.readyState === WebSocket.OPEN
+          && memberships.get(number) === callId;
+      });
+    if (!stillActive) {
+      if (calls.get(callId) === call) endCall(call, 'disconnected');
+      else if (call.roomProvisioned) deleteRoomBestEffort(room);
+      return;
+    }
+
+    call.announced = true;
     const invitation = { callId, room, members: roster, owner: call.owner };
     send(session.socket, { type: 'call_created', ...invitation });
     for (const number of members) send(sessions.get(number).socket, { type: 'incoming', ...invitation });
@@ -843,6 +890,7 @@ export async function createSignalingServer(options = {}) {
     if (!call || !call.members.includes(session.number) || memberships.get(session.number) !== callId) {
       return error(session.socket, 'unauthorized', { callId });
     }
+    if (!call.announced) return error(session.socket, 'call_not_ready', { callId });
     if (!mediaConfig) return error(session.socket, 'media_not_configured', { callId });
 
     try {

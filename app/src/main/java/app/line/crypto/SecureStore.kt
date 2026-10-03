@@ -454,6 +454,18 @@ class SecureStore(context: Context) : AutoCloseable {
     }
 
     @Synchronized
+    fun acknowledgeSent(id: String) {
+        ensureOpen()
+        validId(id)
+        transaction {
+            db.delete("outbox", "id=?", arrayOf(id))
+            deleteSecret("outbox-request", id)
+            val values = ContentValues().apply { put("status", "sent") }
+            db.update("messages", values, "id=? AND deleted=0", arrayOf(id))
+        }
+    }
+
+    @Synchronized
     override fun close() {
         if (!closed) {
             closed = true

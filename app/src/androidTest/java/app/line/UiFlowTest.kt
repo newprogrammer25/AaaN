@@ -18,6 +18,21 @@ class UiFlowTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val context = instrumentation.targetContext
 
+    @Test fun profileAboutShowsInstalledPackageVersion() {
+        val version = context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: error("Package version is missing")
+        val activity = start()
+        try {
+            instrumentation.runOnMainSync {
+                val root = activity.window.decorView
+                find(root, "Профиль").performClick()
+                val about = find(root, "О приложении")
+                assertTrue(descendants(about).filterIsInstance<TextView>().any { it.text.toString() == version })
+                about.performClick()
+            }
+            assertTrue(UiDevice.getInstance(instrumentation).findObject(UiSelector().text("Line $version")).waitForExists(5000))
+        } finally { instrumentation.runOnMainSync { activity.finish() } }
+    }
+
     @Test fun firstLaunchExplainsNumberAndNavigationWorksWithoutSlogans() {
         val activity = start()
         try {
