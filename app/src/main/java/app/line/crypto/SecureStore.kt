@@ -611,7 +611,7 @@ class SecureStore(context: Context) : AutoCloseable {
                 require(peers.size in 1..7 && peers.distinct().size == peers.size)
                 peers.forEach(::validNumber)
                 require(event.outcome in CALL_OUTCOMES)
-                require(event.durationSeconds == 0L || event.outcome == "completed")
+                require(event.durationSeconds == 0L || event.outcome == "completed" || event.outcome == "failed")
             }
             else -> error("Unsupported activity event kind")
         }

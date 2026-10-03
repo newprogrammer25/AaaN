@@ -10,6 +10,18 @@ import java.util.UUID
 class ActivityJournalTest {
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
 
+    @Test fun failedConnectedCallRetainsItsDuration() {
+        val id = "failed-call-${UUID.randomUUID()}"
+        SecureStore(context).use { store ->
+            store.recordActivityEvent(ActivityEvent(id, ActivityEvent.CALL, "84000001", false, "failed", System.currentTimeMillis(), 12))
+        }
+        SecureStore(context).use { store ->
+            val event = store.activityEvents(callsOnly = true, limit = 100).single { it.id == id }
+            assertEquals("failed", event.outcome)
+            assertEquals(12L, event.durationSeconds)
+        }
+    }
+
     @Test fun activityHistoryHasUniqueTimestampCursorsAndPersists() {
         val start = System.currentTimeMillis() + 60_000
         val ids = List(4) { "call-${UUID.randomUUID()}" }
